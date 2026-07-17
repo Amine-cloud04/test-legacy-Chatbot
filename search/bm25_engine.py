@@ -63,7 +63,7 @@ class BM25Engine:
                 continue
             row = self.database.fetchone(
                 """
-                SELECT c.id AS chunk_id, c.project_id, c.content, p.title, p.filename, p.date_modified
+                SELECT c.id AS chunk_id, c.project_id, c.chunk_index, c.content, p.title, p.filename, p.date_modified
                 FROM chunks c
                 JOIN projects p ON p.id = c.project_id
                 WHERE c.id = ?
@@ -75,6 +75,7 @@ class BM25Engine:
                     SearchResult(
                         chunk_id=int(row["chunk_id"]),
                         project_id=int(row["project_id"]),
+                        chunk_index=int(row["chunk_index"]),
                         score=float(score),
                         content=str(row["content"]),
                         title=str(row["title"] or row["filename"]),

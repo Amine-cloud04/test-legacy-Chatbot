@@ -37,6 +37,7 @@ class SearchResult:
 
     chunk_id: int
     project_id: int
+    chunk_index: int
     score: float
     content: str
     title: str

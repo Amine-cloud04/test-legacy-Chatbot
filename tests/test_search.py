@@ -29,3 +29,4 @@ def test_bm25_ranks_most_relevant_chunk_first(tmp_path):
         results = engine.search("radar fpga", 3)
     assert results
     assert results[0].content == "radar radar fpga signal processing"
+    assert results[0].chunk_index == 0

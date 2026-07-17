@@ -14,6 +14,21 @@ from ingest.sharepoint_client import SharePointClient
 from ingest.pipeline import IngestPipeline
 
 
+def missing_sharepoint_settings(settings: Settings) -> list[str]:
+    """Return missing SharePoint environment variable names."""
+
+    missing: list[str] = []
+    if not settings.sharepoint_url:
+        missing.append("SHAREPOINT_URL")
+    if not settings.sharepoint_username:
+        missing.append("SHAREPOINT_USERNAME")
+    if not settings.sharepoint_password:
+        missing.append("SHAREPOINT_PASSWORD")
+    if not settings.sharepoint_library:
+        missing.append("SHAREPOINT_LIBRARY")
+    return missing
+
+
 def main() -> None:
     """Run SharePoint ingestion."""
 
@@ -22,9 +37,20 @@ def main() -> None:
     parser.add_argument("--check", action="store_true", help="Only test the SharePoint connection and list a few files.")
     args = parser.parse_args()
     settings = Settings.from_env()
+    missing = missing_sharepoint_settings(settings)
+    if missing:
+        print("Missing SharePoint configuration values:")
+        for name in missing:
+            print(f"- {name}")
+        print("\nCreate a .env file from .env.example and fill in these values.")
+        raise SystemExit(2)
     if args.check:
         client = SharePointClient(settings)
         files = client.list_files(settings.sharepoint_library)
+        if not files:
+            print(f"Connected, but found 0 files in {settings.sharepoint_library}.")
+            print("Check the library name, permissions, or whether the library contains supported documents.")
+            return
         print(f"Connected. Found {len(files)} files in {settings.sharepoint_library}.")
         for file_url in files[:10]:
             print(file_url)

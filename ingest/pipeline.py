@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,18 +58,17 @@ class IngestPipeline:
                 if not file_bytes:
                     summary.failed += 1
                     continue
-                if self.database.project_exists(filename, modified_date):
-                    summary.skipped += 1
-                    continue
                 extension = Path(filename).suffix.lower()
                 extractor = self.extractors.get(extension)
                 if extractor is None:
                     summary.skipped += 1
                     continue
                 document = extractor.extract(file_bytes, filename)
-                self._store_document(filename, extension, document, modified_date)
-                summary.processed += 1
-            except (OSError, ValueError, RuntimeError) as exc:
+                if self._store_document(filename, extension, document, modified_date):
+                    summary.processed += 1
+                else:
+                    summary.skipped += 1
+            except (OSError, ValueError, RuntimeError, sqlite3.DatabaseError) as exc:
                 logger.error("Failed to ingest %s: %s", item[0] if item else "unknown", exc)
                 summary.failed += 1
         self._rebuild_bm25()
@@ -102,23 +102,30 @@ class IngestPipeline:
             files.append((Path(file_url).name, file_bytes, None or ""))
         return files
 
-    def _store_document(self, filename: str, extension: str, document: ExtractedDocument, modified_date: str | None) -> None:
+    def _store_document(self, filename: str, extension: str, document: ExtractedDocument, modified_date: str | None) -> bool:
         metadata = document.metadata
         date_modified = str(metadata.get("date_modified") or modified_date or "")
-        project_id = self.database.insert_project(
-            filename=filename,
-            title=document.title,
-            raw_text=document.raw_text,
-            author=str(metadata.get("author") or ""),
-            date_created=str(metadata.get("date_created") or ""),
-            date_modified=date_modified,
-            file_type=extension.lstrip("."),
-            word_count=int(metadata.get("word_count") or len(document.raw_text.split())),
-            ingested_at=datetime.now(timezone.utc).isoformat(),
-        )
+        if self.database.project_exists(filename, date_modified):
+            return False
+        try:
+            project_id = self.database.insert_project(
+                filename=filename,
+                title=document.title,
+                raw_text=document.raw_text,
+                author=str(metadata.get("author") or ""),
+                date_created=str(metadata.get("date_created") or ""),
+                date_modified=date_modified,
+                file_type=extension.lstrip("."),
+                word_count=int(metadata.get("word_count") or len(document.raw_text.split())),
+                ingested_at=datetime.now(timezone.utc).isoformat(),
+            )
+        except sqlite3.IntegrityError:
+            logger.info("Skipping duplicate document %s with modified date %s", filename, date_modified)
+            return False
         chunks = self.chunk_text(document.raw_text, self.settings.max_chunk_size, self.settings.chunk_overlap)
         self.database.insert_chunks(project_id, chunks)
         self.database.insert_keywords(project_id, self._keywords(document.raw_text))
+        return True
 
     def chunk_text(self, text: str, max_size: int, overlap: int) -> list[str]:
         """Split text into overlapping word windows."""

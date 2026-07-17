@@ -17,7 +17,7 @@ IngestPipeline -> PDF/DOCX/PPTX Extractors -> SQLite projects/chunks/keywords
         \                                      /
          \                                    /
           v                                  v
-        HybridEngine -> Ranker -> Summariser -> ResponseBuilder -> Streamlit UI
+        HybridEngine -> Ranker -> AnswerGenerator -> ResponseBuilder -> Streamlit UI
 ```
 
 ## Quickstart
@@ -28,6 +28,7 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
+python scripts/create_sample_docs.py
 python scripts/ingest_local.py --path ./sample_docs --reset
 streamlit run ui/app.py
 ```
@@ -74,9 +75,28 @@ Then rebuild indexes:
 python scripts/rebuild_index.py
 ```
 
-## Future Local LLM
+## Local LLM
 
-`assistant/summariser.py` includes a local-only interface for future abstractive summaries. Add a llama.cpp or ctransformers implementation there, point `LOCAL_LLM_PATH` to an internal model file, and keep model loading fully offline.
+The assistant can use a local-only model when a model file is configured. It supports `ctransformers` and `llama-cpp-python` backends and falls back to extractive grounded answers when no model is available.
+
+Example `.env` configuration:
+
+```text
+LOCAL_LLM_PATH=./models/mistral-7b-instruct.Q4_K_M.gguf
+LOCAL_LLM_BACKEND=ctransformers
+LOCAL_LLM_MODEL_TYPE=mistral
+LOCAL_LLM_MAX_NEW_TOKENS=320
+LOCAL_LLM_CONTEXT_CHARS=6000
+```
+
+For `llama-cpp-python`, use:
+
+```text
+LOCAL_LLM_BACKEND=llama-cpp
+LOCAL_LLM_PATH=./models/your-model.gguf
+```
+
+Model files must be copied into the company network ahead of time. The application does not download models at runtime.
 
 ## Folder Structure
 
@@ -103,6 +123,12 @@ The tests create synthetic DOCX/PPTX documents and exercise BM25 and end-to-end 
 
 - PDF image-only pages are skipped; OCR can be added later with an approved offline OCR engine.
 - SharePoint metadata availability varies by deployment; local ingestion uses filesystem modified time.
-- The default summariser is extractive and intentionally simple for offline reliability.
+- The default answer generator is extractive and grounded in retrieved chunks. It provides citations and limitations, but does not yet use a local LLM.
 - Vector search requires optional dependencies and a local model directory.
 - Access control filtering is not implemented; deploy behind existing internal controls or add per-document ACL metadata before broad rollout.
+
+## Current Answer Format
+
+The UI now shows a direct grounded answer first, followed by confidence, limitations, source citations, and expandable evidence chunks. The raw snippets are still available for auditability, but they are no longer the primary answer surface.
+
+Use `python scripts/create_sample_docs.py` to generate local demo files covering radar FPGA processing, UAV navigation, and inertial/GNSS sensor fusion.

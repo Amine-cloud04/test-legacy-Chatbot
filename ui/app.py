@@ -31,11 +31,11 @@ def search(settings: Settings, query: str, top_k: int) -> dict[str, object]:
 
 
 def render_result(result: dict[str, object]) -> None:
-    """Render one expandable result card."""
+    """Render one expandable evidence card."""
 
     title = str(result["title"])
-    with st.expander(f"#{result['rank']} {title}", expanded=int(result["rank"]) == 1):
-        st.caption(f"{result['filename']} | Modified: {result['date_modified'] or 'unknown'}")
+    with st.expander(f"Evidence #{result['rank']} - {title}", expanded=int(result["rank"]) == 1):
+        st.caption(f"{result['source_ref']} | Modified: {result['date_modified'] or 'unknown'}")
         st.progress(float(result["relevance_score"]))
         st.markdown(str(result["summary"]))
         st.write("Keywords")
@@ -44,7 +44,7 @@ def render_result(result: dict[str, object]) -> None:
         technologies = result["technologies"] or ["none detected"]
         st.write(" ".join(f"`{tech}`" for tech in technologies))
         st.code(str(result["matching_excerpt"])[:2000])
-        with st.expander("Project Detail"):
+        with st.expander("Full Retrieved Evidence"):
             st.write(str(result["matching_excerpt"]))
 
 
@@ -69,6 +69,10 @@ def main() -> None:
         st.metric("Projects", stats["projects"])
         st.metric("Chunks", stats["chunks"])
         st.caption(f"Last ingestion: {stats['last_ingestion'] or 'never'}")
+        if settings.local_llm_path and settings.local_llm_path.exists():
+            st.success(f"Local LLM enabled: {settings.local_llm_backend}")
+        else:
+            st.info("Local LLM disabled; using extractive grounded answers.")
         top_k = st.slider("Results", 1, 20, settings.top_k)
         settings.use_vector_search = st.toggle("Vector search", value=settings.use_vector_search and VECTOR_AVAILABLE, disabled=not VECTOR_AVAILABLE)
         st.subheader("Recent Queries")
@@ -86,6 +90,16 @@ def main() -> None:
             if response["total_results"] == 0:
                 st.info("No results found. Try broader technology names, project acronyms, or date filters.")
             else:
+                st.subheader("Answer")
+                st.markdown(str(response["answer"]))
+                confidence = str(response["confidence"]).title()
+                st.caption(f"Confidence: {confidence} | Answer mode: {response['answer_provider']}")
+                st.info(str(response["limitations"]))
+                st.subheader("Sources")
+                for source in response["sources"]:
+                    chunks = ", ".join(str(chunk) for chunk in source["chunks"])
+                    st.write(f"- **{source['title']}** (`{source['filename']}`), chunks: {chunks}")
+                st.subheader("Evidence")
                 for result in response["results"]:
                     render_result(result)
                 st.warning(str(response["gap_analysis"]))
