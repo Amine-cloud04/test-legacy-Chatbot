@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from functools import lru_cache
 
 import numpy as np
 
@@ -37,11 +38,11 @@ class VectorEngine:
         if not VECTOR_AVAILABLE:
             logger.warning("Vector search dependencies are unavailable")
             return False
-        if self.settings.embedding_model_path is None or not self.settings.embedding_model_path.exists():
-            logger.warning("Embedding model path is not configured or unavailable")
+        model = _get_sentence_transformer(self.settings.embedding_model_path, self.settings.embedding_model_name, self.settings.embedding_model_candidates)
+        if model is None:
+            logger.warning("Embedding model is not available locally")
             return False
-        if self.model is None:
-            self.model = SentenceTransformer(str(self.settings.embedding_model_path))
+        self.model = model
         return True
 
     def build_index(self, chunks: list[str]) -> None:
@@ -63,12 +64,11 @@ class VectorEngine:
         if not self._load_model():
             return []
         index_path = Path(self.settings.vector_index_path)
-        ids_path = Path(str(index_path) + ".chunk_ids.npy")
-        if not index_path.exists() or not ids_path.exists():
+        index_data = _load_vector_index(index_path, index_path.stat().st_mtime_ns if index_path.exists() else 0)
+        if index_data is None:
             logger.warning("Vector index is missing")
             return []
-        index = faiss.read_index(str(index_path))
-        self.chunk_ids = [int(x) for x in np.load(ids_path)]
+        index, self.chunk_ids = index_data
         query_embedding = self.model.encode([query], convert_to_numpy=True, normalize_embeddings=True).astype("float32")
         scores, positions = index.search(query_embedding, top_k)
         results: list[SearchResult] = []
@@ -97,3 +97,44 @@ class VectorEngine:
                     )
                 )
         return results
+
+
+@lru_cache(maxsize=2)
+def _get_sentence_transformer(
+    embedding_model_path: Path | None,
+    embedding_model_name: str,
+    embedding_model_candidates: tuple[str, ...],
+):
+    """Load one multilingual embedding model once per process."""
+
+    if embedding_model_path is not None and embedding_model_path.exists():
+        try:
+            return SentenceTransformer(str(embedding_model_path))
+        except Exception as exc:  # pragma: no cover - defensive cache guard
+            logger.warning("Could not load embedding model path %s: %s", embedding_model_path, exc)
+            return None
+
+    candidates = [embedding_model_name] if embedding_model_name else []
+    candidates.extend(candidate for candidate in embedding_model_candidates if candidate and candidate not in candidates)
+    for candidate in candidates:
+        try:
+            return SentenceTransformer(candidate)
+        except Exception as exc:
+            logger.info("Embedding candidate %s unavailable locally: %s", candidate, exc)
+    return None
+
+
+@lru_cache(maxsize=8)
+def _load_vector_index(index_path: Path, mtime_ns: int) -> tuple[object, list[int]] | None:
+    """Load the FAISS index and chunk ids once per file version."""
+
+    ids_path = Path(str(index_path) + ".chunk_ids.npy")
+    if not index_path.exists() or not ids_path.exists():
+        return None
+    try:
+        index = faiss.read_index(str(index_path))
+        chunk_ids = [int(x) for x in np.load(ids_path)]
+    except Exception as exc:  # pragma: no cover - defensive cache guard
+        logger.warning("Could not read vector index %s: %s", index_path, exc)
+        return None
+    return index, chunk_ids

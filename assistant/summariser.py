@@ -44,11 +44,11 @@ class Summariser:
         }
 
     def summarise_with_local_llm(self, text: str) -> str:
-        """Future hook for llama.cpp or ctransformers local-only abstractive summaries."""
+        """Reserved hook for a future local-only abstractive summariser."""
 
         if not self.settings.local_llm_path:
             return ""
-        raise NotImplementedError("Configure llama-cpp-python or ctransformers here for a local model path.")
+        raise NotImplementedError("Connect a local summariser here if one is added later.")
 
     def keywords(self, text: str, limit: int = 10) -> list[str]:
         """Return high-value keywords using simple TF-style scoring."""
@@ -60,4 +60,4 @@ class Summariser:
         return [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", text) if sentence.strip()]
 
     def _tokens(self, text: str) -> list[str]:
-        return [token.lower() for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9\-]+", text)]
+        return [token.lower() for token in re.findall(r"[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9\-]+", text)]

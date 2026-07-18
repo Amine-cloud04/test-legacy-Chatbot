@@ -35,14 +35,17 @@ class PDFExtractor:
             if not text.strip():
                 logger.warning("Skipping image-only or empty page %s in %s", page_number + 1, filename)
             else:
-                page_texts.append(text.strip())
+                clean_text = text.strip()
+                page_texts.append(f"[Page {page_number + 1}]\n{clean_text}")
+                sections.append({"heading": f"Page {page_number + 1}", "content": clean_text})
             page_number += 1
             if page_number > 5000:
                 logger.warning("Stopped PDF extraction for %s after 5000 pages", filename)
                 break
 
         raw_text = "\n\n".join(page_texts)
-        sections = self._detect_sections(raw_text)
+        if not sections:
+            sections = self._detect_sections(raw_text)
         return ExtractedDocument(title=filename, raw_text=raw_text, metadata=self._metadata(page_number, raw_text), sections=sections)
 
     def _metadata(self, page_count: int, raw_text: str) -> dict[str, object]:

@@ -1,6 +1,6 @@
 # Assistant de connaissances Safran
 
-Cet outil est une solution interne, hors ligne et orientée R&D pour rechercher des documents techniques Safran. Il ingère des fichiers PDF, Word et PowerPoint depuis un dossier local ou SharePoint, stocke le texte extrait dans SQLite, construit un index BM25 et affiche des résultats triés avec une réponse justifiée dans une interface Streamlit.
+Cet outil est une solution interne, hors ligne et orientée R&D pour rechercher des documents techniques Safran. Il ingère des fichiers PDF, Word et PowerPoint depuis un dossier local ou SharePoint, stocke le texte extrait dans SQLite, construit un index BM25 et un index vectoriel optionnel, puis affiche des résultats triés avec une réponse justifiée dans une interface Streamlit.
 
 Aucune API externe n'est utilisée au runtime. La recherche vectorielle optionnelle nécessite un modèle local compatible déjà présent sur le réseau d'entreprise.
 
@@ -28,25 +28,18 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-python scripts/create_sample_docs.py
+python scripts/create_sample_docs.py --scale 3
 python scripts/ingest_local.py --path ./sample_docs --reset
 streamlit run ui/app.py
 ```
 
 Sur Windows, utilisez `.venv\\Scripts\\activate` à la place de `source .venv/bin/activate`.
 
-## Local LLM / Ollama
+## LLM Local
 
-Si vous souhaitez accélérer la génération de réponses avec un service LLM local, configurez Ollama en tant que service HTTP.
+L'application peut fonctionner de deux manières pour la génération de réponses:
 
-1. Installer Ollama et charger un modèle local compatible.
-2. Exécuter le service sur le port 11434 :
-
-```bash
-ollama serve
-```
-
-3. Activer l'URL du service dans `.env` :
+L'assistant utilise désormais uniquement le service local Ollama, avec le modèle `llama3.2:3b`:
 
 ```text
 LOCAL_LLM_SERVICE_URL=http://127.0.0.1:11434
@@ -54,7 +47,7 @@ LOCAL_LLM_SERVICE_MODEL=llama3.2:3b
 LOCAL_LLM_TIMEOUT=20
 ```
 
-Si `LOCAL_LLM_SERVICE_URL` n'est pas configuré, l'application retombera sur les réponses extractives justifiées.
+Si Ollama n'est pas disponible, l'application revient automatiquement aux réponses extractives justifiées. Dans tous les cas, le prompt demande une réponse en français.
 
 ## Configuration SharePoint
 
@@ -86,9 +79,11 @@ La recherche vectorielle est désactivée par défaut. Pour l'activer hors ligne
 4. Définissez :
 
 ```text
-EMBEDDING_MODEL_PATH=./models/all-MiniLM-L6-v2
+EMBEDDING_MODEL_NAME=sentence-transformers/paraphrase-multilingual-mpnet-base-v2
 USE_VECTOR_SEARCH=true
 ```
+
+Le code essaie d'abord `BAAI/bge-m3`, puis `paraphrase-multilingual-mpnet-base-v2`, puis `multilingual-e5-base`, en restant strictement local si le modèle est déjà présent en cache ou sur disque.
 
 Puis reconstruisez les index :
 
@@ -121,12 +116,12 @@ Les tests génèrent des documents DOCX/PPTX synthétiques et valident l'ingesti
 
 - Les pages PDF purement images sont ignorées ; une OCR hors ligne peut être ajoutée plus tard.
 - Les métadonnées SharePoint varient selon l'environnement ; l'ingestion locale utilise la date de modification du système de fichiers.
-- Le générateur de réponses est encore extrait et justifié à partir des fragments récupérés.
+- Les réponses sont générées par Ollama local, avec streaming dans l'interface.
 - La recherche vectorielle dépend de dépendances optionnelles et d'un modèle local.
 - Le filtrage des droits d'accès n'est pas encore implémenté ; il faut le renforcer avant un déploiement large.
 
 ## Format de réponse actuel
 
-L'interface affiche désormais une réponse directe justifiée en premier, puis la confiance, les limites, les citations de sources et les fragments de preuve détaillés.
+L'interface affiche désormais une réponse directe en français en premier, puis la confiance, les limites, les citations de sources et les fragments de preuve détaillés.
 
-Utilisez `python scripts/create_sample_docs.py` pour générer des documents de démonstration en français couvrant le radar FPGA, la navigation UAV et la fusion inertielle/GNSS.
+Utilisez `python scripts/create_sample_docs.py --scale 3` pour générer un corpus de démonstration plus volumineux couvrant le radar FPGA, la navigation UAV, la fusion inertielle/GNSS, la vérification avionique, la cybersécurité et le traitement IA embarqué.

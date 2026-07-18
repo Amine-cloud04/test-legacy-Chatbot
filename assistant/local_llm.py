@@ -1,9 +1,13 @@
-"""Local-only LLM wrapper for grounded RAG answers."""
+"""Local Ollama wrapper for grounded RAG answers."""
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
+from typing import Callable, Iterable
+
+import httpx
 
 from config import Settings
 from db.models import SearchResult
@@ -13,175 +17,158 @@ logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class LocalLLMResult:
-    """Generated text and backend metadata from a local model."""
+    """Generated text and backend metadata from the local Ollama model."""
 
     text: str
     provider: str
 
 
 class LocalLLM:
-    """Generate answers with an optional local model file.
-
-    Supported backends are intentionally local-only:
-    - ctransformers for GGUF/GGML style model files.
-    - llama-cpp-python for GGUF model files.
-
-    If the backend, dependency, or model path is unavailable, this class returns
-    None so the assistant can fall back to extractive grounded answers.
-    """
+    """Generate answers with the local Ollama service."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._model: object | None = None
+        self._client: httpx.Client | None = None
 
     def available(self) -> bool:
-        """Return True when a local model path or remote service URL is configured."""
+        """Return True when an Ollama endpoint is configured."""
 
-        return bool(
-            self.settings.local_llm_service_url
-            or (self.settings.local_llm_path and self.settings.local_llm_path.exists())
-        )
+        return bool(self.settings.local_llm_service_url)
 
-    def generate(self, query: str, results: list[SearchResult]) -> LocalLLMResult | None:
-        """Generate a grounded answer from retrieved chunks using a local model or remote service."""
+    def generate(
+        self,
+        query: str,
+        results: list[SearchResult],
+        on_chunk: Callable[[str], None] | None = None,
+    ) -> LocalLLMResult | None:
+        """Generate a grounded answer from retrieved chunks."""
 
         if not self.available():
             return None
         prompt = self._prompt(query, results)
-        if self.settings.local_llm_service_url:
-            result = self._generate_remote(prompt)
-            if result or not (self.settings.local_llm_path and self.settings.local_llm_path.exists()):
-                return result
-            logger.warning("Remote LLM failed; falling back to local model path.")
-        backend = self.settings.local_llm_backend.lower().strip()
-        if backend == "llama-cpp":
-            return self._generate_llama_cpp(prompt)
-        return self._generate_ctransformers(prompt)
+        return self._generate_remote(prompt, on_chunk=on_chunk)
 
-    def _generate_ctransformers(self, prompt: str) -> LocalLLMResult | None:
-        try:
-            from ctransformers import AutoModelForCausalLM
-        except ImportError:
-            logger.warning("ctransformers is not installed; falling back to extractive answer")
-            return None
+    def stream(self, query: str, results: list[SearchResult]) -> Iterable[str]:
+        """Yield answer chunks as they are streamed by Ollama."""
 
-        if self._model is None:
-            self._model = AutoModelForCausalLM.from_pretrained(
-                str(self.settings.local_llm_path),
-                model_type=self.settings.local_llm_model_type,
-                gpu_layers=0,
-                context_length=2048,
-            )
-        text = str(
-            self._model(
-                prompt,
-                max_new_tokens=self.settings.local_llm_max_new_tokens,
-                temperature=0.1,
-                repetition_penalty=1.1,
-                stop=["</s>", "<|user|>", "Question:", "Question :"],
-            )
-        ).strip()
-        return LocalLLMResult(text=text, provider="local-llm:ctransformers")
+        buffer: list[str] = []
 
-    def _generate_llama_cpp(self, prompt: str) -> LocalLLMResult | None:
-        try:
-            from llama_cpp import Llama
-        except ImportError:
-            logger.warning("llama-cpp-python is not installed; falling back to extractive answer")
-            return None
+        def collect(chunk: str) -> None:
+            buffer.append(chunk)
 
-        if self._model is None:
-            self._model = Llama(
-                model_path=str(self.settings.local_llm_path),
-                n_ctx=4096,
-                n_threads=None,
-                n_gpu_layers=0,
-                verbose=False,
-            )
-        response = self._model(
-            prompt,
-            max_tokens=self.settings.local_llm_max_new_tokens,
-            temperature=0.1,
-            stop=["</answer>", "Question:", "Question :"],
-        )
-        text = str(response["choices"][0]["text"]).strip()
-        return LocalLLMResult(text=text, provider="local-llm:llama-cpp")
+        result = self.generate(query, results, on_chunk=collect)
+        if result is None:
+            return []
+        return buffer
 
-    def _generate_remote(self, prompt: str) -> LocalLLMResult | None:
-        try:
-            import httpx
-        except ImportError:
-            logger.warning("httpx is not installed; falling back to extractive answer")
-            return None
+    def _client_session(self) -> httpx.Client:
+        if self._client is None:
+            self._client = httpx.Client(timeout=self.settings.local_llm_timeout)
+        return self._client
 
+    def _generate_remote(self, prompt: str, on_chunk: Callable[[str], None] | None = None) -> LocalLLMResult | None:
         url = self.settings.local_llm_service_url.rstrip("/") + "/api/generate"
         payload = {
             "model": self.settings.local_llm_service_model,
             "prompt": prompt,
-            "stream": False,
+            "stream": True,
             "options": {
                 "num_predict": self.settings.local_llm_max_new_tokens,
                 "temperature": 0.1,
+                "top_p": 0.9,
             },
         }
 
+        text_parts: list[str] = []
         try:
-            response = httpx.post(url, json=payload, timeout=self.settings.local_llm_timeout)
-            response.raise_for_status()
-            data = response.json()
+            with self._client_session().stream("POST", url, json=payload) as response:
+                response.raise_for_status()
+                for raw_line in response.iter_lines():
+                    if not raw_line:
+                        continue
+                    try:
+                        data = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        logger.debug("Ignoring non-JSON Ollama stream line: %s", raw_line)
+                        continue
+                    chunk = str(data.get("response") or "")
+                    if chunk:
+                        text_parts.append(chunk)
+                        if on_chunk is not None:
+                            on_chunk(chunk)
+                    if data.get("done"):
+                        break
         except Exception as exc:
             logger.warning("Remote LLM request failed: %s", exc)
             return None
 
-        text = ""
-        if isinstance(data, dict):
-            if data.get("response"):
-                text = str(data["response"]).strip()
-            else:
-                choices = data.get("choices") or []
-                if choices:
-                    choice = choices[0]
-                    text = choice.get("text") or choice.get("message", {}).get("content", "")
-                if not text and "result" in data:
-                    result = data["result"]
-                    if isinstance(result, dict):
-                        text = result.get("output", "")
-                    else:
-                        text = str(result)
-        text = str(text).strip()
+        text = "".join(text_parts).strip()
         if not text:
             logger.warning("Remote LLM returned no text")
             return None
         return LocalLLMResult(text=text, provider=f"remote-llm:{self.settings.local_llm_service_model}")
 
     def _prompt(self, query: str, results: list[SearchResult]) -> str:
-        context_parts: list[str] = []
-        remaining = self.settings.local_llm_context_chars
-        for result in self._context_results(results):
-            citation = f"{result.filename}, chunk {result.chunk_index + 1}"
-            content = result.content.strip()[:900]
-            block = f"[{citation}]\n{content}\n"
-            if remaining <= 0:
-                break
-            context_parts.append(block[:remaining])
-            remaining -= len(block)
-        context = "\n".join(context_parts)
+        context = self._build_context(results)
         return (
-            "Vous êtes un assistant interne de connaissances R&D. "
-            "Répondez uniquement en français, quelle que soit la langue de la question. "
-            "Répondez uniquement à partir du contexte fourni et ne fabriquez aucune source. "
-            "Citez chaque affirmation avec l'étiquette de source entre crochets. "
-            "Si les preuves sont insuffisantes, dites-le brièvement.\n\n"
+            "Vous êtes un assistant technique interne Safran pour la R&D et les projets d'ingénierie.\n"
+            "Répondez exclusivement en français naturel et professionnel, même si la question ou le contexte contient de l'anglais.\n"
+            "N'utilisez jamais de phrases anglaises complètes ; gardez seulement les acronymes techniques indispensables.\n"
+            "N'inventez aucune information et n'utilisez que le contexte fourni.\n"
+            "Synthétisez les informations issues de plusieurs documents quand c'est utile.\n"
+            "Si les éléments sont insuffisants, dites-le clairement et brièvement.\n"
+            "Si des documents se contredisent, expliquez la différence au lieu de choisir arbitrairement.\n"
+            "Citez naturellement les sources entre crochets au fil de la réponse.\n"
+            "Évitez les longs copier-coller du contexte.\n\n"
             f"Question : {query}\n\n"
-            f"Contexte :\n{context}\n\n"
-            "Rédigez une réponse concise en 3 à 5 puces, en français.\n"
+            f"Contexte récupéré :\n{context}\n\n"
+            "Répondez en 3 à 6 puces maximum.\n"
             "Réponse :"
         )
 
-    def _context_results(self, results: list[SearchResult]) -> list[SearchResult]:
+    def _build_context(self, results: list[SearchResult]) -> str:
         if not results:
-            return []
-        max_score = max(result.score for result in results)
-        threshold = max_score * 0.25
-        selected = [result for result in results if result.score >= threshold]
-        return (selected or results[:1])[:3]
+            return ""
+
+        selected = self._context_results(results)
+        context_parts: list[str] = []
+        remaining = self.settings.local_llm_context_chars
+        for result in selected:
+            citation = f"{result.filename}, chunk {result.chunk_index + 1}"
+            body = self._normalize_context(result.content)
+            block = f"[{citation}]\n{body}\n"
+            if len(block) > remaining:
+                block = block[:remaining].rstrip()
+            if not block:
+                continue
+            context_parts.append(block)
+            remaining -= len(block)
+            if remaining <= 0:
+                break
+        return "\n".join(context_parts)
+
+    def _context_results(self, results: list[SearchResult]) -> list[SearchResult]:
+        """Select a compact, non-duplicated set of chunks for prompting."""
+
+        ordered = sorted(results, key=lambda result: (-result.score, result.project_id, result.chunk_index))
+        selected: list[SearchResult] = []
+        seen_signatures: set[str] = set()
+        per_project_counts: dict[int, int] = {}
+        for result in ordered:
+            if per_project_counts.get(result.project_id, 0) >= 2:
+                continue
+            signature = self._normalize_context(result.content)
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            selected.append(result)
+            per_project_counts[result.project_id] = per_project_counts.get(result.project_id, 0) + 1
+            if len(selected) >= 5:
+                break
+        selected.sort(key=lambda result: (result.project_id, result.chunk_index))
+        return selected
+
+    def _normalize_context(self, text: str) -> str:
+        """Collapse redundant whitespace so repeated chunks are easier to detect."""
+
+        return " ".join(text.split()).strip()

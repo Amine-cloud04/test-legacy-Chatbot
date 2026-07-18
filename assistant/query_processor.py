@@ -11,6 +11,13 @@ from config import Settings
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "before", "by", "for", "from", "in", "is",
     "of", "on", "or", "show", "the", "to", "what", "which", "with", "about", "after",
+    "alors", "au", "aux", "ce", "ces", "cet", "cette", "comment", "dans", "de", "des",
+    "du", "elle", "elles", "est", "et", "faire", "il", "ils", "je", "la", "le", "les",
+    "leurs", "lui", "mais", "me", "mes", "moi", "mon", "ne", "nos", "notre", "nous",
+    "où", "par", "pas", "pour", "quand", "que", "quel", "quelle", "quels", "quelles",
+    "qui", "quoi", "sa", "se", "ses", "son", "sont", "sur", "ta", "te", "tes", "ton",
+    "tu", "un", "une", "vos", "votre", "vous", "quoi", "principal", "principaux", "principale",
+    "principales", "risque", "risques", "validation", "validation", "projet", "projets",
 }
 
 
@@ -33,7 +40,7 @@ class QueryProcessor:
     def parse(self, query: str) -> ParsedQuery:
         """Parse a natural language query into structured filters."""
 
-        tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9\-]+", query.lower())
+        tokens = re.findall(r"[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9\-]+", query.lower())
         keywords = [token for token in tokens if token not in STOPWORDS and len(token) > 1]
         date_filters: dict[str, str] = {}
         for pattern, key in ((r"before\s+(\d{4})", "before"), (r"after\s+(\d{4})", "after"), (r"in\s+(\d{4})", "in")):

@@ -19,7 +19,7 @@ from search.ranker import Ranker
 from search.vector_engine import VECTOR_AVAILABLE
 
 
-def search(settings: Settings, query: str, top_k: int) -> dict[str, object]:
+def search(settings: Settings, query: str, top_k: int, on_chunk=None) -> dict[str, object]:
     """Run parsing, search, reranking, and response building."""
 
     with Database(settings.db_path) as database:
@@ -27,7 +27,7 @@ def search(settings: Settings, query: str, top_k: int) -> dict[str, object]:
         parsed = QueryProcessor(settings).parse(query)
         results = HybridEngine(settings, database).search(query, top_k)
         ranked = Ranker(settings).rerank(query, results)
-        return ResponseBuilder(settings, database).build(query, ranked, parsed.keywords)
+        return ResponseBuilder(settings, database).build(query, ranked, parsed.keywords, on_chunk=on_chunk)
 
 
 def render_result(result: dict[str, object]) -> None:
@@ -46,6 +46,16 @@ def render_result(result: dict[str, object]) -> None:
         st.code(str(result["matching_excerpt"])[:2000])
         with st.expander("Preuve complète récupérée"):
             st.write(str(result["matching_excerpt"]))
+
+
+def _display_answer_provider(provider: str) -> str:
+    """Return a French label for the answer provider."""
+
+    if provider == "extractive":
+        return "extractif"
+    if provider.startswith("remote-llm:"):
+        return "modèle local"
+    return provider
 
 
 def main() -> None:
@@ -69,12 +79,12 @@ def main() -> None:
         st.metric("Projets", stats["projects"])
         st.metric("Fragments", stats["chunks"])
         st.caption(f"Dernière ingestion : {stats['last_ingestion'] or 'jamais'}")
-        if settings.local_llm_service_url:
-            st.success(f"LLM service activé : {settings.local_llm_service_url}")
-        elif settings.local_llm_path and settings.local_llm_path.exists():
-            st.success("LLM local activé ; les réponses sont enrichies.")
+        local_llm_service_url = getattr(settings, "local_llm_service_url", "")
+        local_llm_model = getattr(settings, "local_llm_service_model", "llama3.2:3b")
+        if local_llm_service_url:
+            st.success(f"Ollama actif : {local_llm_model} via {local_llm_service_url}")
         else:
-            st.info("LLM désactivé ; l'application utilise des réponses extraites et justifiées.")
+            st.info("Ollama n'est pas configuré ; l'application utilise des réponses extraites et justifiées.")
         top_k = st.slider("Résultats", 1, 20, settings.top_k)
         settings.use_vector_search = st.toggle("Recherche vectorielle", value=settings.use_vector_search and VECTOR_AVAILABLE, disabled=not VECTOR_AVAILABLE)
         st.subheader("Requêtes récentes")
@@ -88,14 +98,25 @@ def main() -> None:
         if st.button("Rechercher", type="primary") and query.strip():
             st.session_state["queries"].append(query.strip())
             with st.spinner("Recherche dans les projets indexés..."):
-                response = search(settings, query.strip(), top_k)
+                answer_box = st.empty()
+                streamed_chunks: list[str] = []
+
+                def on_chunk(chunk: str) -> None:
+                    streamed_chunks.append(chunk)
+                    answer_box.markdown("".join(streamed_chunks))
+
+                response = search(settings, query.strip(), top_k, on_chunk=on_chunk)
             if response["total_results"] == 0:
                 st.info("Aucun résultat trouvé. Essayez des termes techniques plus larges, des acronymes de projet ou des filtres de date.")
             else:
                 st.subheader("Réponse")
-                st.markdown(str(response["answer"]))
+                if not streamed_chunks:
+                    answer_box.markdown(str(response["answer"]))
+                else:
+                    answer_box.markdown("".join(streamed_chunks) or str(response["answer"]))
                 confidence = str(response["confidence"]).title()
-                st.caption(f"Confiance : {confidence} | Mode de réponse : {response['answer_provider']}")
+                provider = _display_answer_provider(str(response["answer_provider"]))
+                st.caption(f"Confiance : {confidence} | Mode de réponse : {provider}")
                 st.info(str(response["limitations"]))
                 st.subheader("Sources")
                 for source in response["sources"]:

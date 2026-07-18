@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import pickle
+from functools import lru_cache
 from pathlib import Path
 
 from rank_bm25 import BM25Okapi
@@ -39,13 +40,11 @@ class BM25Engine:
         """Load a previously pickled BM25 index."""
 
         path = Path(self.settings.index_path)
-        if not path.exists():
+        loaded = _load_bm25_index(path, path.stat().st_mtime_ns if path.exists() else 0)
+        if loaded is None:
             logger.warning("BM25 index does not exist at %s", path)
             return False
-        with path.open("rb") as handle:
-            payload = pickle.load(handle)
-        self.index = payload["index"]
-        self.chunk_ids = list(payload["chunk_ids"])
+        self.index, self.chunk_ids = loaded
         return self.index is not None
 
     def search(self, query: str, top_k: int) -> list[SearchResult]:
@@ -87,3 +86,20 @@ class BM25Engine:
 
     def _tokenise(self, text: str) -> list[str]:
         return [token.strip(".,;:!?()[]{}\"'").lower() for token in text.split() if token.strip()]
+
+
+@lru_cache(maxsize=8)
+def _load_bm25_index(index_path: Path, mtime_ns: int) -> tuple[BM25Okapi | None, list[int]] | None:
+    """Load the pickled BM25 index once per file version."""
+
+    if not index_path.exists():
+        return None
+    try:
+        with index_path.open("rb") as handle:
+            payload = pickle.load(handle)
+    except Exception as exc:  # pragma: no cover - defensive cache guard
+        logger.warning("Could not read BM25 index %s: %s", index_path, exc)
+        return None
+    index = payload.get("index")
+    chunk_ids = list(payload.get("chunk_ids") or [])
+    return index, chunk_ids

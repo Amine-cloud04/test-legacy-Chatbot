@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+import re
 
 from config import Settings
 from db.models import SearchResult
@@ -18,11 +19,11 @@ class Ranker:
     def rerank(self, query: str, results: list[SearchResult]) -> list[SearchResult]:
         """Return top configured reranked results."""
 
-        query_tokens = {token.lower() for token in query.split()}
+        query_tokens = {token.lower() for token in re.findall(r"[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9\-]+", query)}
         reranked: list[SearchResult] = []
         for result in results:
             score = result.score * (1 + 0.1 * self._recency_factor(result.date_modified))
-            title_tokens = {token.strip(".,;:!?()[]{}\"'").lower() for token in result.title.split()}
+            title_tokens = {token.lower() for token in re.findall(r"[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9\-]+", result.title)}
             if query_tokens & title_tokens:
                 score *= 1.2
             reranked.append(replace(result, score=score))

@@ -7,6 +7,8 @@ from db.database import Database
 from db.models import SearchResult
 from assistant.answer_generator import AnswerGenerator
 from assistant.summariser import Summariser
+from typing import Callable
+import re
 
 
 class ResponseBuilder:
@@ -18,19 +20,27 @@ class ResponseBuilder:
         self.summariser = Summariser(settings)
         self.answer_generator = AnswerGenerator(settings)
 
-    def build(self, query: str, results: list[SearchResult], query_keywords: list[str]) -> dict[str, object]:
+    def build(
+        self,
+        query: str,
+        results: list[SearchResult],
+        query_keywords: list[str],
+        on_chunk: Callable[[str], None] | None = None,
+    ) -> dict[str, object]:
         """Build the final response dictionary including gap analysis."""
 
         max_score = max((result.score for result in results), default=1.0)
-        generated_answer = self.answer_generator.generate(query, results, query_keywords)
+        generated_answer = self.answer_generator.generate(query, results, query_keywords, on_chunk=on_chunk)
         output_results: list[dict[str, object]] = []
         seen_keywords: set[str] = set()
+        seen_tokens: set[str] = set()
         for rank, result in enumerate(results, start=1):
             project = self.database.get_project(result.project_id)
             source_text = project.raw_text if project else result.content
             summary = self.summariser.summarise(source_text, query_keywords)
             keywords = list(summary["keywords"])
             seen_keywords.update(keywords)
+            seen_tokens.update(self._token_set(source_text))
             output_results.append(
                 {
                     "rank": rank,
@@ -45,7 +55,7 @@ class ResponseBuilder:
                     "matching_excerpt": result.content,
                 }
             )
-        missing = [keyword for keyword in query_keywords if keyword not in seen_keywords]
+        missing = [keyword for keyword in query_keywords if keyword.lower() not in seen_keywords and keyword.lower() not in seen_tokens]
         gap = "Aucun projet antérieur ne couvre : aucun terme."
         if missing:
             gap = f"Aucun projet antérieur ne couvre : {', '.join(missing)}. Ces termes peuvent révéler des écarts de recherche."
@@ -78,3 +88,12 @@ class ResponseBuilder:
         for source in sources.values():
             source["chunks"] = sorted(set(source["chunks"]))
         return list(sources.values())
+
+    def _token_set(self, text: str) -> set[str]:
+        """Return a normalized token set for gap analysis."""
+
+        return {
+            token.lower()
+            for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9\-]+", text)
+            if len(token) > 1
+        }

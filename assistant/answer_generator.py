@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Callable
 from dataclasses import dataclass
 
 from config import Settings
@@ -33,7 +34,13 @@ class AnswerGenerator:
         self.settings = settings
         self.local_llm = LocalLLM(settings)
 
-    def generate(self, query: str, results: list[SearchResult], query_keywords: list[str]) -> GeneratedAnswer:
+    def generate(
+        self,
+        query: str,
+        results: list[SearchResult],
+        query_keywords: list[str],
+        on_chunk: Callable[[str], None] | None = None,
+    ) -> GeneratedAnswer:
         """Generate a concise grounded answer from retrieved search results."""
 
         if not results:
@@ -53,17 +60,20 @@ class AnswerGenerator:
                 provider="extractive",
             )
 
-        llm_result = self.local_llm.generate(query, results)
+        llm_result = self.local_llm.generate(query, results, on_chunk=on_chunk)
         if llm_result and llm_result.text:
-            answer = llm_result.text
-            if "[" not in answer:
-                answer = f"{answer}\n\nSources used: {self._source_line(results)}."
-            return GeneratedAnswer(
-                answer=answer,
-                confidence=self._confidence(results, evidence, query_keywords),
-                limitations=self._limitations(query, results, query_keywords),
-                provider=llm_result.provider,
-            )
+            answer = self._clean_llm_answer(llm_result.text)
+            if not self._looks_french(answer):
+                llm_result = None
+            else:
+                if "[" not in answer:
+                    answer = f"{answer}\n\nSources utilisées : {self._source_line(results)}."
+                return GeneratedAnswer(
+                    answer=answer,
+                    confidence=self._confidence(results, evidence, query_keywords),
+                    limitations=self._limitations(query, results, query_keywords),
+                    provider=llm_result.provider,
+                )
 
         lines = ["D'après les documents indexés, les éléments de preuve les plus solides sont :"]
         for sentence, result in evidence[:4]:
@@ -147,10 +157,119 @@ class AnswerGenerator:
                 citations.append(citation)
         return "; ".join(f"[{citation}]" for citation in citations)
 
+    def _clean_llm_answer(self, text: str) -> str:
+        """Remove obvious duplicate sentences and collapse noisy whitespace."""
+
+        paragraphs = [part.strip() for part in re.split(r"\n{2,}", text) if part.strip()]
+        cleaned_paragraphs: list[str] = []
+        seen_signatures: list[set[str]] = []
+
+        for paragraph in paragraphs:
+            sentences = [sentence.strip() for sentence in re.split(r"(?<=[.!?])\s+", paragraph) if sentence.strip()]
+            cleaned_sentences: list[str] = []
+            for sentence in sentences:
+                lowered = sentence.lower().strip()
+                if lowered.startswith(("pour répondre à votre question", "je vais synthétiser", "je vais répondre", "réponse :")):
+                    continue
+                if len(sentence) < 40 and not sentence.endswith((".", "!", "?")):
+                    continue
+                normalized = self._normalize_sentence(sentence)
+                if not normalized:
+                    continue
+                sentence_tokens = set(normalized.split())
+                duplicate = False
+                for previous in seen_signatures:
+                    if self._sentence_similarity(sentence_tokens, previous) >= 0.6:
+                        duplicate = True
+                        break
+                if duplicate:
+                    continue
+                cleaned_sentences.append(sentence)
+                seen_signatures.append(sentence_tokens)
+            if cleaned_sentences:
+                cleaned_paragraphs.append(" ".join(cleaned_sentences))
+
+        if not cleaned_paragraphs:
+            return text.strip()
+
+        return "\n\n".join(cleaned_paragraphs).strip()
+
+    def _sentence_similarity(self, left: set[str], right: set[str]) -> float:
+        """Compute a simple token overlap score between two sentences."""
+
+        if not left or not right:
+            return 0.0
+        return len(left & right) / len(left | right)
+
+    def _normalize_sentence(self, sentence: str) -> str:
+        """Normalize a sentence for duplicate detection."""
+
+        tokens = [token.lower() for token in re.findall(r"[A-Za-zÀ-ÿ0-9]+", sentence)]
+        stopwords = {
+            "le", "la", "les", "des", "de", "du", "et", "en", "un", "une", "dans",
+            "sur", "pour", "avec", "par", "au", "aux", "ce", "cet", "cette", "ces",
+            "qui", "que", "dont", "est", "sont", "a", "ont", "été", "être", "the",
+            "and", "of", "to", "for", "with", "used", "using", "project", "projects",
+        }
+        filtered = [token for token in tokens if token not in stopwords and len(token) > 2]
+        return " ".join(filtered)
+
+    def _looks_french(self, text: str) -> bool:
+        """Return True when the answer looks predominantly French."""
+
+        lowered = f" {text.lower()} "
+        english_markers = (
+            " the ",
+            " and ",
+            " project ",
+            " projects ",
+            " used ",
+            " using ",
+            " team ",
+            " risk ",
+            " risks ",
+            " reproducibility ",
+            " validation: ",
+            " validation ",
+            " response ",
+            " answer ",
+            " source ",
+            " sources ",
+            " however ",
+            " therefore ",
+            " project overview ",
+        )
+        french_markers = (
+            " le ",
+            " la ",
+            " les ",
+            " des ",
+            " pour ",
+            " avec ",
+            " réponse ",
+            " projet ",
+            " risques ",
+            " validation ",
+            " traçabilité ",
+            " reproductibilité ",
+            " toutefois ",
+            " cependant ",
+            " synthèse ",
+            " éléments ",
+            " preuve ",
+        )
+        english_hits = sum(1 for marker in english_markers if marker in lowered)
+        french_hits = sum(1 for marker in french_markers if marker in lowered)
+        if english_hits > 0 and english_hits >= french_hits + 1:
+            return False
+        if english_hits > 0 and french_hits == 0:
+            return False
+        return True
+
     def _sentences(self, text: str) -> list[str]:
         normalised = re.sub(r"\s+", " ", text).strip()
         sentences = re.split(r"(?<=[.!?])\s+", normalised)
         return [sentence.strip() for sentence in sentences if 25 <= len(sentence.strip()) <= 350]
 
     def _tokens(self, text: str) -> list[str]:
-        return [token.lower() for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9\-]+", text)]
+        return [token.lower() for token in re.findall(r"[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9\-]+", text)]

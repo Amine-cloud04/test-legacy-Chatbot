@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,29 +120,107 @@ class IngestPipeline:
                 word_count=int(metadata.get("word_count") or len(document.raw_text.split())),
                 ingested_at=datetime.now(timezone.utc).isoformat(),
             )
+            chunks = self.chunk_document(document, filename, self.settings.max_chunk_size, self.settings.chunk_overlap)
+            self.database.insert_chunks(project_id, chunks)
+            self.database.insert_keywords(project_id, self._keywords(document.raw_text))
         except sqlite3.IntegrityError:
             logger.info("Skipping duplicate document %s with modified date %s", filename, date_modified)
             return False
-        chunks = self.chunk_text(document.raw_text, self.settings.max_chunk_size, self.settings.chunk_overlap)
-        self.database.insert_chunks(project_id, chunks)
-        self.database.insert_keywords(project_id, self._keywords(document.raw_text))
         return True
 
-    def chunk_text(self, text: str, max_size: int, overlap: int) -> list[str]:
-        """Split text into overlapping word windows."""
+    def chunk_document(self, document: ExtractedDocument, filename: str, max_size: int, overlap: int) -> list[str]:
+        """Split a document into metadata-rich overlapping character chunks."""
 
-        words = text.split()
-        if not words:
-            return []
         chunks: list[str] = []
+        for section_index, section in enumerate(document.sections or [{"heading": "Document", "content": document.raw_text}]):
+            heading = str(section.get("heading") or "Document").strip()
+            content = str(section.get("content") or "").strip()
+            if not content:
+                continue
+            for chunk_index, chunk_body in enumerate(self._chunk_text(content, max_size, overlap)):
+                metadata_line = self._chunk_metadata_line(
+                    filename=filename,
+                    title=document.title,
+                    section=heading,
+                    section_index=section_index,
+                    chunk_index=chunk_index,
+                    document=document,
+                )
+                chunks.append(f"{metadata_line}\n{chunk_body}".strip())
+        if chunks:
+            return chunks
+        fallback = document.raw_text.strip()
+        if not fallback:
+            return []
+        metadata_line = self._chunk_metadata_line(
+            filename=filename,
+            title=document.title,
+            section="Document",
+            section_index=0,
+            chunk_index=0,
+            document=document,
+        )
+        return [f"{metadata_line}\n{fallback}".strip()]
+
+    def _chunk_text(self, text: str, max_size: int, overlap: int) -> list[str]:
+        """Split text into overlapping character windows on sentence boundaries when possible."""
+
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            return []
+        if len(text) <= max_size:
+            return [text]
+
+        chunks: list[str] = []
+        start = 0
+        text_length = len(text)
+        overlap = max(0, min(overlap, max_size - 1))
         step = max(1, max_size - overlap)
-        for start in range(0, len(words), step):
-            chunk = " ".join(words[start : start + max_size])
+        while start < text_length:
+            end = min(text_length, start + max_size)
+            if end < text_length:
+                pivot = max(start + max_size // 2, start + 1)
+                candidates = [text.rfind(sep, start + 1, end) for sep in (". ", "! ", "? ", "\n", "; ", " - ")]
+                split_at = max((candidate for candidate in candidates if candidate > pivot), default=-1)
+                if split_at > start:
+                    end = split_at + 1
+            chunk = text[start:end].strip()
             if chunk:
                 chunks.append(chunk)
-            if start + max_size >= len(words):
+            if end >= text_length:
                 break
+            start = max(0, end - overlap)
+            if start >= text_length:
+                break
+            if step and end - start < 10:
+                start = min(text_length, start + step)
         return chunks
+
+    def _chunk_metadata_line(
+        self,
+        filename: str,
+        title: str,
+        section: str,
+        section_index: int,
+        chunk_index: int,
+        document: ExtractedDocument,
+    ) -> str:
+        """Return a compact provenance line for a stored chunk."""
+
+        page_count = document.metadata.get("page_count")
+        slide_count = document.metadata.get("slide_count")
+        page_hint = ""
+        if section.lower().startswith("page "):
+            page_hint = f"Page {section.split()[-1]}"
+        elif slide_count:
+            page_hint = f"Slide {section_index + 1}"
+        elif page_count:
+            page_hint = f"Page {section_index + 1}"
+        provenance = [f"Source: {filename}", f"Titre: {title or filename}", f"Section: {section}"]
+        if page_hint:
+            provenance.append(page_hint)
+        provenance.append(f"Chunk: {chunk_index + 1}")
+        return "[" + " | ".join(provenance) + "]"
 
     def _keywords(self, text: str, limit: int = 25) -> list[str]:
         counts: dict[str, int] = {}

@@ -25,8 +25,9 @@ class HybridEngine:
 
         if not self.settings.use_vector_search or not VECTOR_AVAILABLE:
             return self.bm25.search(query, top_k)
-        bm25_results = self.bm25.search(query, top_k * 2)
-        vector_results = self.vector.search(query, top_k * 2)
+        candidate_k = max(top_k, 20)
+        bm25_results = self.bm25.search(query, candidate_k)
+        vector_results = self.vector.search(query, candidate_k)
         fused: dict[int, SearchResult] = {}
         for result_set in (bm25_results, vector_results):
             for rank, result in enumerate(result_set, start=1):
@@ -35,4 +36,4 @@ class HybridEngine:
                     fused[result.chunk_id].score += score
                 else:
                     fused[result.chunk_id] = replace(result, score=score)
-        return sorted(fused.values(), key=lambda result: result.score, reverse=True)[:top_k]
+        return sorted(fused.values(), key=lambda result: result.score, reverse=True)[:candidate_k]
