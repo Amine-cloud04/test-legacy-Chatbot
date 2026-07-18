@@ -38,18 +38,18 @@ class AnswerGenerator:
 
         if not results:
             return GeneratedAnswer(
-                answer="I could not find indexed evidence that answers this question.",
+                answer="Je n'ai pas trouvé d'éléments indexés permettant de répondre à cette question.",
                 confidence="low",
-                limitations="No matching chunks were retrieved from the current knowledge base.",
+                limitations="Aucun fragment correspondant n'a été récupéré dans la base de connaissances actuelle.",
                 provider="extractive",
             )
 
         evidence = self._top_evidence(results, query_keywords)
         if not evidence:
             return GeneratedAnswer(
-                answer="I found related documents, but the retrieved text does not contain enough clear evidence to answer directly.",
+                answer="J'ai trouvé des documents liés, mais le texte récupéré ne contient pas assez d'éléments clairs pour répondre directement.",
                 confidence="low",
-                limitations="The result set contains weak or indirect matches only.",
+                limitations="Le jeu de résultats contient uniquement des correspondances faibles ou indirectes.",
                 provider="extractive",
             )
 
@@ -65,7 +65,7 @@ class AnswerGenerator:
                 provider=llm_result.provider,
             )
 
-        lines = ["Based on the indexed documents, the strongest evidence is:"]
+        lines = ["D'après les documents indexés, les éléments de preuve les plus solides sont :"]
         for sentence, result in evidence[:4]:
             lines.append(f"- {sentence} [{self._citation(result)}]")
 
@@ -74,7 +74,7 @@ class AnswerGenerator:
             if result.title not in project_names:
                 project_names.append(result.title)
         if project_names:
-            lines.append(f"\nMost relevant projects: {', '.join(project_names[:5])}.")
+            lines.append(f"\nProjets les plus pertinents : {', '.join(project_names[:5])}.")
 
         return GeneratedAnswer(
             answer="\n".join(lines),
@@ -126,15 +126,15 @@ class AnswerGenerator:
 
     def _limitations(self, query: str, results: list[SearchResult], query_keywords: list[str]) -> str:
         if len(results) < 3:
-            return "The answer is based on a small number of retrieved chunks; verify the cited documents before making project decisions."
+            return "La réponse repose sur un petit nombre de fragments récupérés ; vérifiez les documents cités avant de prendre une décision de projet."
         missing = [
             keyword
             for keyword in query_keywords
             if not any(keyword.lower() in result.content.lower() for result in results)
         ]
         if missing:
-            return f"The retrieved evidence does not clearly cover: {', '.join(missing)}."
-        return "The answer is extractive and grounded in retrieved chunks; it does not infer information absent from the documents."
+            return f"Les éléments récupérés ne couvrent pas clairement : {', '.join(missing)}."
+        return "La réponse est extractive et fondée sur des fragments récupérés ; elle n'infère pas d'information absente des documents."
 
     def _citation(self, result: SearchResult) -> str:
         return f"{result.filename}, chunk {result.chunk_index + 1}"

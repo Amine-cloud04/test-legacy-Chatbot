@@ -35,16 +35,24 @@ class LocalLLM:
         self._model: object | None = None
 
     def available(self) -> bool:
-        """Return True when a local model path is configured and exists."""
+        """Return True when a local model path or remote service URL is configured."""
 
-        return bool(self.settings.local_llm_path and self.settings.local_llm_path.exists())
+        return bool(
+            self.settings.local_llm_service_url
+            or (self.settings.local_llm_path and self.settings.local_llm_path.exists())
+        )
 
     def generate(self, query: str, results: list[SearchResult]) -> LocalLLMResult | None:
-        """Generate a grounded answer from retrieved chunks using a local model."""
+        """Generate a grounded answer from retrieved chunks using a local model or remote service."""
 
         if not self.available():
             return None
         prompt = self._prompt(query, results)
+        if self.settings.local_llm_service_url:
+            result = self._generate_remote(prompt)
+            if result or not (self.settings.local_llm_path and self.settings.local_llm_path.exists()):
+                return result
+            logger.warning("Remote LLM failed; falling back to local model path.")
         backend = self.settings.local_llm_backend.lower().strip()
         if backend == "llama-cpp":
             return self._generate_llama_cpp(prompt)
@@ -70,7 +78,7 @@ class LocalLLM:
                 max_new_tokens=self.settings.local_llm_max_new_tokens,
                 temperature=0.1,
                 repetition_penalty=1.1,
-                stop=["</s>", "<|user|>", "Question:"],
+                stop=["</s>", "<|user|>", "Question:", "Question :"],
             )
         ).strip()
         return LocalLLMResult(text=text, provider="local-llm:ctransformers")
@@ -94,10 +102,57 @@ class LocalLLM:
             prompt,
             max_tokens=self.settings.local_llm_max_new_tokens,
             temperature=0.1,
-            stop=["</answer>", "Question:"],
+            stop=["</answer>", "Question:", "Question :"],
         )
         text = str(response["choices"][0]["text"]).strip()
         return LocalLLMResult(text=text, provider="local-llm:llama-cpp")
+
+    def _generate_remote(self, prompt: str) -> LocalLLMResult | None:
+        try:
+            import httpx
+        except ImportError:
+            logger.warning("httpx is not installed; falling back to extractive answer")
+            return None
+
+        url = self.settings.local_llm_service_url.rstrip("/") + "/api/generate"
+        payload = {
+            "model": self.settings.local_llm_service_model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "num_predict": self.settings.local_llm_max_new_tokens,
+                "temperature": 0.1,
+            },
+        }
+
+        try:
+            response = httpx.post(url, json=payload, timeout=self.settings.local_llm_timeout)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            logger.warning("Remote LLM request failed: %s", exc)
+            return None
+
+        text = ""
+        if isinstance(data, dict):
+            if data.get("response"):
+                text = str(data["response"]).strip()
+            else:
+                choices = data.get("choices") or []
+                if choices:
+                    choice = choices[0]
+                    text = choice.get("text") or choice.get("message", {}).get("content", "")
+                if not text and "result" in data:
+                    result = data["result"]
+                    if isinstance(result, dict):
+                        text = result.get("output", "")
+                    else:
+                        text = str(result)
+        text = str(text).strip()
+        if not text:
+            logger.warning("Remote LLM returned no text")
+            return None
+        return LocalLLMResult(text=text, provider=f"remote-llm:{self.settings.local_llm_service_model}")
 
     def _prompt(self, query: str, results: list[SearchResult]) -> str:
         context_parts: list[str] = []
@@ -112,17 +167,15 @@ class LocalLLM:
             remaining -= len(block)
         context = "\n".join(context_parts)
         return (
-            "<|system|>\n"
-            "You are an internal R&D knowledge assistant. Answer only from the context. "
-            "Do not invent sources. Cite every claim with the bracketed source label. "
-            "If evidence is insufficient, say so briefly.\n"
-            "</s>\n"
-            "<|user|>\n"
-            f"Question: {query}\n\n"
-            f"Context:\n{context}\n\n"
-            "Write a concise answer in 3 to 5 bullets.\n"
-            "</s>\n"
-            "<|assistant|>\n"
+            "Vous êtes un assistant interne de connaissances R&D. "
+            "Répondez uniquement en français, quelle que soit la langue de la question. "
+            "Répondez uniquement à partir du contexte fourni et ne fabriquez aucune source. "
+            "Citez chaque affirmation avec l'étiquette de source entre crochets. "
+            "Si les preuves sont insuffisantes, dites-le brièvement.\n\n"
+            f"Question : {query}\n\n"
+            f"Contexte :\n{context}\n\n"
+            "Rédigez une réponse concise en 3 à 5 puces, en français.\n"
+            "Réponse :"
         )
 
     def _context_results(self, results: list[SearchResult]) -> list[SearchResult]:

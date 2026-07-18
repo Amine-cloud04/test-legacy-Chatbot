@@ -48,10 +48,13 @@ class Settings:
     vector_index_path: Path = Path("./data/faiss.index")
     embedding_model_path: Path | None = None
     local_llm_path: Path | None = None
+    local_llm_service_url: str = "http://127.0.0.1:11434"
+    local_llm_service_model: str = "llama3.2:3b"
     local_llm_backend: str = "ctransformers"
     local_llm_model_type: str = "mistral"
     local_llm_max_new_tokens: int = 320
     local_llm_context_chars: int = 6000
+    local_llm_timeout: int = 60
     max_chunk_size: int = 512
     chunk_overlap: int = 64
     top_k: int = 10
@@ -82,10 +85,13 @@ class Settings:
             vector_index_path=Path(os.getenv("VECTOR_INDEX_PATH", "./data/faiss.index")),
             embedding_model_path=Path(embedding_path) if embedding_path else None,
             local_llm_path=Path(llm_path) if llm_path else None,
+            local_llm_service_url=os.getenv("LOCAL_LLM_SERVICE_URL", "http://127.0.0.1:11434"),
+            local_llm_service_model=os.getenv("LOCAL_LLM_SERVICE_MODEL", "llama3.2:3b"),
             local_llm_backend=os.getenv("LOCAL_LLM_BACKEND", "ctransformers"),
             local_llm_model_type=os.getenv("LOCAL_LLM_MODEL_TYPE", "mistral"),
             local_llm_max_new_tokens=int(os.getenv("LOCAL_LLM_MAX_NEW_TOKENS", "320")),
             local_llm_context_chars=int(os.getenv("LOCAL_LLM_CONTEXT_CHARS", "6000")),
+            local_llm_timeout=int(os.getenv("LOCAL_LLM_TIMEOUT", "60")),
             max_chunk_size=int(os.getenv("MAX_CHUNK_SIZE", "512")),
             chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "64")),
             top_k=int(os.getenv("TOP_K", "10")),

@@ -1,114 +1,112 @@
-# Safran R&D Knowledge Assistant
+# Assistant de connaissances Safran
 
-An on-premise, CPU-only Python knowledge assistant for searching Safran Electronics & Defense R&D documents. It ingests PDF, Word, and PowerPoint files from a local folder or SharePoint, stores extracted text in SQLite, builds a BM25 search index, and serves ranked, summarised results in Streamlit.
+Cet outil est une solution interne, hors ligne et orientée R&D pour rechercher des documents techniques Safran. Il ingère des fichiers PDF, Word et PowerPoint depuis un dossier local ou SharePoint, stocke le texte extrait dans SQLite, construit un index BM25 et affiche des résultats triés avec une réponse justifiée dans une interface Streamlit.
 
-No runtime external AI APIs are used. Optional vector search requires a local sentence-transformers model directory already present on the company network.
+Aucune API externe n'est utilisée au runtime. La recherche vectorielle optionnelle nécessite un modèle local compatible déjà présent sur le réseau d'entreprise.
 
 ## Architecture
 
 ```text
-SharePoint / Local Folder
+SharePoint / dossier local
         |
         v
-IngestPipeline -> PDF/DOCX/PPTX Extractors -> SQLite projects/chunks/keywords
+IngestPipeline -> extracteurs PDF/DOCX/PPTX -> SQLite projects/chunks/keywords
         |                                      |
         v                                      v
- BM25 pickle index                    Optional FAISS vector index
+ index BM25                      index vectoriel optionnel
         \                                      /
          \                                    /
           v                                  v
-        HybridEngine -> Ranker -> AnswerGenerator -> ResponseBuilder -> Streamlit UI
+ HybridEngine -> Ranker -> AnswerGenerator -> ResponseBuilder -> UI Streamlit
 ```
 
-## Quickstart
+## Démarrage rapide
 
 ```bash
 cd safran-knowledge-assistant
 python -m venv .venv
-.venv\Scripts\activate
+source .venv/bin/activate
 pip install -r requirements.txt
-copy .env.example .env
+cp .env.example .env
 python scripts/create_sample_docs.py
 python scripts/ingest_local.py --path ./sample_docs --reset
 streamlit run ui/app.py
 ```
 
-On Linux/macOS, use `source .venv/bin/activate` instead of the Windows activation command.
+Sur Windows, utilisez `.venv\\Scripts\\activate` à la place de `source .venv/bin/activate`.
 
-## SharePoint Configuration
+## Local LLM / Ollama
 
-Set these values in `.env`:
+Si vous souhaitez accélérer la génération de réponses avec un service LLM local, configurez Ollama en tant que service HTTP.
+
+1. Installer Ollama et charger un modèle local compatible.
+2. Exécuter le service sur le port 11434 :
+
+```bash
+ollama serve
+```
+
+3. Activer l'URL du service dans `.env` :
 
 ```text
-SHAREPOINT_URL=https://your-sharepoint-site
-SHAREPOINT_USERNAME=DOMAIN\user
-SHAREPOINT_PASSWORD=your-password
+LOCAL_LLM_SERVICE_URL=http://127.0.0.1:11434
+LOCAL_LLM_SERVICE_MODEL=llama3.2:3b
+LOCAL_LLM_TIMEOUT=20
+```
+
+Si `LOCAL_LLM_SERVICE_URL` n'est pas configuré, l'application retombera sur les réponses extractives justifiées.
+
+## Configuration SharePoint
+
+Renseignez ces valeurs dans `.env` :
+
+```text
+SHAREPOINT_URL=https://votre-site-sharepoint
+SHAREPOINT_USERNAME=DOMAINE\\utilisateur
+SHAREPOINT_PASSWORD=votre-mot-de-passe
 SHAREPOINT_LIBRARY=Documents
 ```
 
-Run:
+Puis exécutez :
 
 ```bash
 python scripts/ingest_sharepoint.py --check
 python scripts/ingest_sharepoint.py
 ```
 
-Use `--check` first to validate credentials and list the first files found in the library. The client treats URLs containing `.sharepoint.com` as SharePoint Online. Other URLs are treated as on-premise deployments and currently use username/password auth through the Office365 client library; if your on-premise deployment requires NTLM or Kerberos, add the company-approved auth adapter before ingestion. Failures are logged and skipped so one unreadable file does not stop a full ingestion run.
+Le paramètre `--check` permet de valider les identifiants et de lister les premiers fichiers trouvés. Les échecs sont enregistrés et ignorés pour ne pas bloquer l'ingestion complète.
 
-## Vector Search
+## Recherche vectorielle
 
-Vector search is disabled by default. To enable it offline:
+La recherche vectorielle est désactivée par défaut. Pour l'activer hors ligne :
 
-1. Download a compatible sentence-transformers model on an internet-enabled machine.
-2. Move the full model directory onto the company network.
-3. Install optional wheels from the local package mirror: `sentence-transformers`, `faiss-cpu`.
-4. Set:
+1. Téléchargez un modèle compatible sur une machine connectée à Internet.
+2. Copiez le dossier du modèle sur le réseau d'entreprise.
+3. Installez les dépendances optionnelles depuis le miroir interne : `sentence-transformers`, `faiss-cpu`.
+4. Définissez :
 
 ```text
 EMBEDDING_MODEL_PATH=./models/all-MiniLM-L6-v2
 USE_VECTOR_SEARCH=true
 ```
 
-Then rebuild indexes:
+Puis reconstruisez les index :
 
 ```bash
 python scripts/rebuild_index.py
 ```
 
-## Local LLM
-
-The assistant can use a local-only model when a model file is configured. It supports `ctransformers` and `llama-cpp-python` backends and falls back to extractive grounded answers when no model is available.
-
-Example `.env` configuration:
+## Structure du projet
 
 ```text
-LOCAL_LLM_PATH=./models/mistral-7b-instruct.Q4_K_M.gguf
-LOCAL_LLM_BACKEND=ctransformers
-LOCAL_LLM_MODEL_TYPE=mistral
-LOCAL_LLM_MAX_NEW_TOKENS=320
-LOCAL_LLM_CONTEXT_CHARS=6000
-```
-
-For `llama-cpp-python`, use:
-
-```text
-LOCAL_LLM_BACKEND=llama-cpp
-LOCAL_LLM_PATH=./models/your-model.gguf
-```
-
-Model files must be copied into the company network ahead of time. The application does not download models at runtime.
-
-## Folder Structure
-
-```text
-config.py                  Environment-backed settings
-db/                        SQLite schema, models, and access wrapper
-ingest/                    SharePoint/local ingestion and extractors
-search/                    BM25, optional vector search, hybrid merge, reranking
-assistant/                 Query parsing, summarisation, response assembly
-ui/app.py                  Streamlit application
-scripts/                   Operational CLIs
-tests/                     Pytest coverage
+config.py                  paramètres via variables d'environnement
+db/                        schéma SQLite, modèles et accès aux données
+ingest/                    ingestion locale/SharePoint et extracteurs
+search/                    BM25, recherche vectorielle optionnelle, fusion hybride
+assistant/                 traitement des requêtes, résumé, génération de réponses
+ui/app.py                  application Streamlit
+scripts/                   scripts opérationnels
+tests/                     tests Pytest
 ```
 
 ## Tests
@@ -117,18 +115,18 @@ tests/                     Pytest coverage
 pytest
 ```
 
-The tests create synthetic DOCX/PPTX documents and exercise BM25 and end-to-end local ingestion.
+Les tests génèrent des documents DOCX/PPTX synthétiques et valident l'ingestion locale et la recherche BM25.
 
-## Known Limitations And Roadmap
+## Limites connues et prochaines étapes
 
-- PDF image-only pages are skipped; OCR can be added later with an approved offline OCR engine.
-- SharePoint metadata availability varies by deployment; local ingestion uses filesystem modified time.
-- The default answer generator is extractive and grounded in retrieved chunks. It provides citations and limitations, but does not yet use a local LLM.
-- Vector search requires optional dependencies and a local model directory.
-- Access control filtering is not implemented; deploy behind existing internal controls or add per-document ACL metadata before broad rollout.
+- Les pages PDF purement images sont ignorées ; une OCR hors ligne peut être ajoutée plus tard.
+- Les métadonnées SharePoint varient selon l'environnement ; l'ingestion locale utilise la date de modification du système de fichiers.
+- Le générateur de réponses est encore extrait et justifié à partir des fragments récupérés.
+- La recherche vectorielle dépend de dépendances optionnelles et d'un modèle local.
+- Le filtrage des droits d'accès n'est pas encore implémenté ; il faut le renforcer avant un déploiement large.
 
-## Current Answer Format
+## Format de réponse actuel
 
-The UI now shows a direct grounded answer first, followed by confidence, limitations, source citations, and expandable evidence chunks. The raw snippets are still available for auditability, but they are no longer the primary answer surface.
+L'interface affiche désormais une réponse directe justifiée en premier, puis la confiance, les limites, les citations de sources et les fragments de preuve détaillés.
 
-Use `python scripts/create_sample_docs.py` to generate local demo files covering radar FPGA processing, UAV navigation, and inertial/GNSS sensor fusion.
+Utilisez `python scripts/create_sample_docs.py` pour générer des documents de démonstration en français couvrant le radar FPGA, la navigation UAV et la fusion inertielle/GNSS.

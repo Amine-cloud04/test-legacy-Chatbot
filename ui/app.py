@@ -31,75 +31,77 @@ def search(settings: Settings, query: str, top_k: int) -> dict[str, object]:
 
 
 def render_result(result: dict[str, object]) -> None:
-    """Render one expandable evidence card."""
+    """Afficher une carte d'évidence extensible."""
 
     title = str(result["title"])
-    with st.expander(f"Evidence #{result['rank']} - {title}", expanded=int(result["rank"]) == 1):
-        st.caption(f"{result['source_ref']} | Modified: {result['date_modified'] or 'unknown'}")
+    with st.expander(f"Preuve #{result['rank']} - {title}", expanded=int(result["rank"]) == 1):
+        st.caption(f"{result['source_ref']} | Modifié : {result['date_modified'] or 'inconnu'}")
         st.progress(float(result["relevance_score"]))
         st.markdown(str(result["summary"]))
-        st.write("Keywords")
+        st.write("Mots-clés")
         st.write(" ".join(f"`{kw}`" for kw in result["keywords"]))
         st.write("Technologies")
-        technologies = result["technologies"] or ["none detected"]
+        technologies = result["technologies"] or ["aucune détectée"]
         st.write(" ".join(f"`{tech}`" for tech in technologies))
         st.code(str(result["matching_excerpt"])[:2000])
-        with st.expander("Full Retrieved Evidence"):
+        with st.expander("Preuve complète récupérée"):
             st.write(str(result["matching_excerpt"]))
 
 
 def main() -> None:
     """Render the Streamlit application."""
 
-    st.set_page_config(page_title="Safran R&D Knowledge Assistant", layout="wide")
+    st.set_page_config(page_title="Assistant de connaissances Safran", layout="wide")
     settings = Settings.from_env()
     st.session_state.setdefault("queries", [])
 
     with st.sidebar:
-        st.header("Safran R&D Knowledge Assistant")
-        if st.button("Ingest Local Documents"):
-            with st.spinner("Ingesting local documents..."):
+        st.header("Assistant de connaissances Safran")
+        if st.button("Ingérer les documents locaux"):
+            with st.spinner("Ingestion des documents locaux..."):
                 with Database(settings.db_path) as database:
                     database.init_schema()
                     summary = IngestPipeline(settings, database).run("local")
-                st.success(f"{summary.processed} processed, {summary.skipped} skipped, {summary.failed} failed")
+                st.success(f"{summary.processed} traités, {summary.skipped} ignorés, {summary.failed} échecs")
         with Database(settings.db_path) as database:
             database.init_schema()
             stats = database.stats()
-        st.metric("Projects", stats["projects"])
-        st.metric("Chunks", stats["chunks"])
-        st.caption(f"Last ingestion: {stats['last_ingestion'] or 'never'}")
-        if settings.local_llm_path and settings.local_llm_path.exists():
-            st.success(f"Local LLM enabled: {settings.local_llm_backend}")
+        st.metric("Projets", stats["projects"])
+        st.metric("Fragments", stats["chunks"])
+        st.caption(f"Dernière ingestion : {stats['last_ingestion'] or 'jamais'}")
+        if settings.local_llm_service_url:
+            st.success(f"LLM service activé : {settings.local_llm_service_url}")
+        elif settings.local_llm_path and settings.local_llm_path.exists():
+            st.success("LLM local activé ; les réponses sont enrichies.")
         else:
-            st.info("Local LLM disabled; using extractive grounded answers.")
-        top_k = st.slider("Results", 1, 20, settings.top_k)
-        settings.use_vector_search = st.toggle("Vector search", value=settings.use_vector_search and VECTOR_AVAILABLE, disabled=not VECTOR_AVAILABLE)
-        st.subheader("Recent Queries")
-        for previous in st.session_state["queries"][-5:][::-1]:
-            if st.button(previous, key=f"query-{previous}"):
+            st.info("LLM désactivé ; l'application utilise des réponses extraites et justifiées.")
+        top_k = st.slider("Résultats", 1, 20, settings.top_k)
+        settings.use_vector_search = st.toggle("Recherche vectorielle", value=settings.use_vector_search and VECTOR_AVAILABLE, disabled=not VECTOR_AVAILABLE)
+        st.subheader("Requêtes récentes")
+        for index, previous in enumerate(st.session_state["queries"][-5:][::-1]):
+            if st.button(previous, key=f"query-{index}-{previous}"):
                 st.session_state["active_query"] = previous
 
-    tab_search, tab_map = st.tabs(["Search", "Knowledge Map"])
+    tab_search, tab_map = st.tabs(["Recherche", "Carte des connaissances"])
     with tab_search:
-        query = st.text_input("Search", value=st.session_state.get("active_query", ""), placeholder="Find previous radar FPGA or UAV navigation projects")
-        if st.button("Search", type="primary") and query.strip():
+        query = st.text_input("Recherche", value=st.session_state.get("active_query", ""), placeholder="Rechercher des projets antérieurs sur le radar, le FPGA ou la navigation UAV")
+        if st.button("Rechercher", type="primary") and query.strip():
             st.session_state["queries"].append(query.strip())
-            with st.spinner("Searching indexed projects..."):
+            with st.spinner("Recherche dans les projets indexés..."):
                 response = search(settings, query.strip(), top_k)
             if response["total_results"] == 0:
-                st.info("No results found. Try broader technology names, project acronyms, or date filters.")
+                st.info("Aucun résultat trouvé. Essayez des termes techniques plus larges, des acronymes de projet ou des filtres de date.")
             else:
-                st.subheader("Answer")
+                st.subheader("Réponse")
                 st.markdown(str(response["answer"]))
                 confidence = str(response["confidence"]).title()
-                st.caption(f"Confidence: {confidence} | Answer mode: {response['answer_provider']}")
+                st.caption(f"Confiance : {confidence} | Mode de réponse : {response['answer_provider']}")
                 st.info(str(response["limitations"]))
                 st.subheader("Sources")
                 for source in response["sources"]:
                     chunks = ", ".join(str(chunk) for chunk in source["chunks"])
-                    st.write(f"- **{source['title']}** (`{source['filename']}`), chunks: {chunks}")
-                st.subheader("Evidence")
+                    st.write(f"- **{source['title']}** (`{source['filename']}`), fragments : {chunks}")
+                st.subheader("Preuves")
                 for result in response["results"]:
                     render_result(result)
                 st.warning(str(response["gap_analysis"]))
@@ -113,7 +115,7 @@ def main() -> None:
         if rows:
             st.bar_chart({row["keyword"]: row["count"] for row in rows})
         else:
-            st.info("No keywords indexed yet.")
+            st.info("Aucun mot-clé n'a encore été indexé.")
 
 
 if __name__ == "__main__":

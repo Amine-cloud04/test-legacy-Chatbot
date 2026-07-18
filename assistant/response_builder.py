@@ -46,9 +46,9 @@ class ResponseBuilder:
                 }
             )
         missing = [keyword for keyword in query_keywords if keyword not in seen_keywords]
-        gap = "No previous projects found covering: none."
+        gap = "Aucun projet antérieur ne couvre : aucun terme."
         if missing:
-            gap = f"No previous projects found covering: {', '.join(missing)}. These may represent research gaps."
+            gap = f"Aucun projet antérieur ne couvre : {', '.join(missing)}. Ces termes peuvent révéler des écarts de recherche."
         sources = self._sources(results)
         return {
             "query": query,
