@@ -6,18 +6,58 @@ Aucune API externe n'est utilisée au runtime. La recherche vectorielle optionne
 
 ## Architecture
 
+```mermaid
+flowchart TD
+    A[Documents locaux / SharePoint] --> B[Ingestion]
+    B --> C[Extraction texte PDF / DOCX / PPTX]
+    C --> D[Nettoyage + métadonnées]
+    D --> E[Chunking 640 chars / overlap 100]
+    E --> F[SQLite projects / chunks / keywords]
+    E --> G[Index BM25]
+    E --> H[Index vectoriel optionnel]
+    G --> I[Cache disque + mémoire]
+    H --> I
+
+    J[Question utilisateur en français] --> K[Streamlit UI]
+    K --> L[Query Processor]
+    L --> M[Hybrid Retrieval]
+    M --> G
+    M --> H
+    M --> N[Fusion RRF]
+    N --> O[Reranking local]
+    O --> P[Construction du contexte]
+    P --> Q[Ollama local llama3.2:3b]
+    Q --> R[Réponse en français]
+    R --> K
+
+    F --> M
+```
+
+### Lecture du pipeline
+
+1. **Ingestion**
+   - Les documents sont lus depuis un dossier local ou SharePoint.
+   - Les extracteurs récupèrent le texte des fichiers PDF, DOCX et PPTX.
+   - Le contenu est découpé en chunks courts avec chevauchement.
+   - Les métadonnées et le texte sont persistés dans SQLite.
+   - Les index BM25 et vectoriel sont construits une seule fois à l'ingestion.
+
+2. **Recherche**
+   - La question de l'utilisateur est analysée en français.
+   - Le moteur lance une recherche hybride BM25 + vecteurs.
+   - Les résultats sont fusionnés avec Reciprocal Rank Fusion.
+   - Un reranker local garde les meilleurs candidats.
+
+3. **Génération**
+   - Le contexte utile est reconstruit à partir des meilleurs fragments.
+   - Les doublons sont réduits avant envoi au modèle.
+   - Ollama `llama3.2:3b` génère une réponse en français.
+   - Streamlit affiche la réponse en streaming avec les sources et les preuves.
+
+### Résumé en une ligne
+
 ```text
-SharePoint / dossier local
-        |
-        v
-IngestPipeline -> extracteurs PDF/DOCX/PPTX -> SQLite projects/chunks/keywords
-        |                                      |
-        v                                      v
- index BM25                      index vectoriel optionnel
-        \                                      /
-         \                                    /
-          v                                  v
- HybridEngine -> Ranker -> AnswerGenerator -> ResponseBuilder -> UI Streamlit
+Documents -> extraction -> chunking -> indexation -> hybrid retrieval -> rerank -> contexte -> Ollama -> réponse française sourcée -> UI
 ```
 
 ## Démarrage rapide
@@ -37,8 +77,6 @@ Sur Windows, utilisez `.venv\\Scripts\\activate` à la place de `source .venv/bi
 
 ## LLM Local
 
-L'application peut fonctionner de deux manières pour la génération de réponses:
-
 L'assistant utilise désormais uniquement le service local Ollama, avec le modèle `llama3.2:3b`:
 
 ```text
@@ -48,6 +86,8 @@ LOCAL_LLM_TIMEOUT=20
 ```
 
 Si Ollama n'est pas disponible, l'application revient automatiquement aux réponses extractives justifiées. Dans tous les cas, le prompt demande une réponse en français.
+
+La réponse est streamée dans l'interface dès que le modèle commence à générer le texte.
 
 ## Configuration SharePoint
 
@@ -110,7 +150,7 @@ tests/                     tests Pytest
 pytest
 ```
 
-Les tests génèrent des documents DOCX/PPTX synthétiques et valident l'ingestion locale et la recherche BM25.
+Les tests génèrent des documents DOCX/PPTX synthétiques et valident l'ingestion locale, la recherche BM25, la fusion hybride, le générateur de réponses, et le branchement Ollama.
 
 ## Limites connues et prochaines étapes
 
