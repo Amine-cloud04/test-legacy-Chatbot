@@ -1,0 +1,36 @@
+# COMPLETE USB bundle — company PC needs NOTHING from the web
+
+This folder is meant to be self-contained:
+- the app
+- portable Windows Python
+- all Python libraries (wheelhouse)
+- Ollama Windows + model weights
+- offline install scripts
+
+## On your PERSONAL PC (internet) — once
+
+```bash
+./pack_usb.sh
+```
+
+Wait until it finishes (several GB: Python + libs + Ollama + model).
+
+Copy the whole folder `dist/safran-usb` to an encrypted USB stick.
+
+## On the COMPANY PC (no project, no Python, no Ollama, no web installs)
+
+1. Plug USB, open `safran-usb`
+2. Double-click **`install_offline.bat`** once  
+   → installs Python packages from the USB only (no internet)
+3. Open SharePoint in the browser (already allowed) → sync/download project files to a local folder
+4. Double-click **`demarrer.bat`**
+   - option 2: sync that local folder
+   - option 4: start review
+
+That is all. Do not install Python/Ollama from the web on the company PC.
+
+## If something fails
+
+- Run `check_ready.bat`
+- Read errors from `install_offline.bat`
+- Confirm `runtime\python\python.exe`, `runtime\ollama\ollama.exe`, and `runtime\ollama\models` exist on the stick

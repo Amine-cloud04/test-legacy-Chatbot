@@ -69,11 +69,27 @@ class Settings:
     rerank_top_k: int = 5
     use_vector_search: bool = False
     tech_terms: tuple[str, ...] = field(default_factory=lambda: DEFAULT_TECH_TERMS)
+    sync_manifest_path: Path | None = None
+    review_mode: bool = False
 
     @classmethod
-    def from_env(cls, env_file: Path | str | None = ".env") -> "Settings":
-        """Create settings from environment variables, loading env_file when present."""
+    def from_env(cls, env_file: Path | str | None = None) -> "Settings":
+        """Create settings from environment variables, loading env_file when present.
 
+        Resolution order for the env file:
+        1. Explicit ``env_file`` argument
+        2. ``SAFRAN_ENV_FILE`` environment variable
+        3. ``.env.review`` when ``SAFRAN_MODE=review``
+        4. ``.env``
+        """
+
+        if env_file is None:
+            env_file = os.getenv("SAFRAN_ENV_FILE", "").strip() or None
+        if env_file is None and os.getenv("SAFRAN_MODE", "").strip().lower() == "review":
+            review_path = Path(".env.review")
+            env_file = review_path if review_path.is_file() else ".env"
+        if env_file is None:
+            env_file = ".env"
         if env_file:
             load_dotenv(env_file)
 
@@ -82,14 +98,17 @@ class Settings:
         llm_path = os.getenv("LOCAL_LLM_PATH", "").strip()
         tech_terms = os.getenv("TECH_TERMS", "").strip()
         use_vector = os.getenv("USE_VECTOR_SEARCH", "false").lower() in {"1", "true", "yes", "on"}
+        review_mode = os.getenv("SAFRAN_MODE", "").strip().lower() == "review" or Path(str(env_file)).name == ".env.review"
+        manifest_raw = os.getenv("SYNC_MANIFEST_PATH", "").strip()
+        db_path = Path(os.getenv("DB_PATH", "./data/knowledge_base.db"))
 
         return cls(
-            sharepoint_url=os.getenv("SHAREPOINT_URL", ""),
-            sharepoint_username=os.getenv("SHAREPOINT_USERNAME", ""),
-            sharepoint_password=os.getenv("SHAREPOINT_PASSWORD", ""),
-            sharepoint_library=os.getenv("SHAREPOINT_LIBRARY", ""),
+            sharepoint_url="" if review_mode else os.getenv("SHAREPOINT_URL", ""),
+            sharepoint_username="" if review_mode else os.getenv("SHAREPOINT_USERNAME", ""),
+            sharepoint_password="" if review_mode else os.getenv("SHAREPOINT_PASSWORD", ""),
+            sharepoint_library="" if review_mode else os.getenv("SHAREPOINT_LIBRARY", ""),
             local_docs_path=Path(os.getenv("LOCAL_DOCS_PATH", "./sample_docs")),
-            db_path=Path(os.getenv("DB_PATH", "./data/knowledge_base.db")),
+            db_path=db_path,
             index_path=Path(os.getenv("INDEX_PATH", "./data/bm25_index.pkl")),
             vector_index_path=Path(os.getenv("VECTOR_INDEX_PATH", "./data/faiss.index")),
             embedding_model_path=Path(embedding_path) if embedding_path else None,
@@ -112,6 +131,8 @@ class Settings:
             rerank_top_k=int(os.getenv("RERANK_TOP_K", "5")),
             use_vector_search=use_vector and (bool(embedding_path) or bool(embedding_name)),
             tech_terms=tuple(t.strip() for t in tech_terms.split(",") if t.strip()) or DEFAULT_TECH_TERMS,
+            sync_manifest_path=Path(manifest_raw) if manifest_raw else db_path.with_name("sync_manifest.json"),
+            review_mode=review_mode,
         )
 
 

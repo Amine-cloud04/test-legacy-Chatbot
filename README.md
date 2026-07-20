@@ -60,7 +60,33 @@ flowchart TD
 Documents -> extraction -> chunking -> indexation -> hybrid retrieval -> rerank -> contexte -> Ollama -> réponse française sourcée -> UI
 ```
 
-## Démarrage rapide
+## Pack USB Windows (PC personnel → PC entreprise sans Internet)
+
+Le PC entreprise n'a **rien** à installer depuis le web. Tout est sur la clé.
+
+Sur votre **PC personnel** (avec Internet) :
+
+```bash
+./pack_usb.sh
+```
+
+Cela prépare `dist/safran-usb/` (~4 Go) avec :
+- l'application
+- Python Windows portable
+- toutes les bibliothèques Python
+- Ollama Windows + modèle `llama3.2:3b`
+
+Copiez **tout** le dossier `dist/safran-usb` sur une clé USB chiffrée (8 Go minimum).
+
+Sur le **PC entreprise** :
+
+1. `install_offline.bat` (une fois — installe depuis la clé uniquement)
+2. Ouvrir SharePoint dans le navigateur → synchroniser/télécharger les dossiers projets
+3. `demarrer.bat` → synchroniser ce dossier local → lancer la revue
+
+Détails : `USB_LIRE_MOI.txt`.
+
+## Démarrage rapide (développement local)
 
 ```bash
 cd safran-knowledge-assistant
@@ -68,16 +94,49 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+./setup_offline.sh
 python scripts/create_sample_docs.py --scale 3
-python scripts/ingest_local.py --path ./sample_docs --reset
-streamlit run ui/app.py
+./sync_from_folder.sh ./sample_docs --reset
+./check_ready.sh
+./run_review.sh
 ```
 
-Sur Windows, utilisez `.venv\\Scripts\\activate` à la place de `source .venv/bin/activate`.
+Sur Windows : `.venv\Scripts\activate`, puis les `.bat` équivalents (`setup_offline.bat`, `demarrer.bat`, …).
+
+Menu guidé (recommandé sur PC entreprise) :
+
+```bash
+./demarrer.sh
+```
+
+## Workflow recommandé (PC entreprise + SharePoint navigateur)
+
+Sur un PC entreprise, SharePoint Online s'ouvre déjà dans le navigateur (SSO). Ne stockez pas de mot de passe SharePoint sur la clé USB.
+
+```text
+1. ./setup_offline.sh
+   → crée .env.review (sans secrets SharePoint)
+
+2. Ouvrir la bibliothèque SharePoint dans le navigateur
+   → Synchroniser avec OneDrive, ou télécharger le dossier projets
+
+3. ./sync_from_folder.sh "/chemin/vers/OneDrive/Bibliothèque" --reset
+   → écrit data/knowledge_base.db + data/bm25_index.pkl + data/sync_manifest.json
+
+4. ./check_ready.sh
+   → vérifie base, index, manifeste, Ollama
+
+5. ./run_review.sh
+   → revue hors ligne sur 127.0.0.1
+```
+
+Ou enchaîner via `./demarrer.sh` (menu 1 → 2 → 3 → 4).
+
+Le panneau latéral affiche la date de dernière synchro et le chemin source.
 
 ## LLM Local
 
-L'assistant utilise désormais uniquement le service local Ollama, avec le modèle `llama3.2:3b`:
+L'assistant utilise le service local Ollama, avec le modèle `llama3.2:3b`:
 
 ```text
 LOCAL_LLM_SERVICE_URL=http://127.0.0.1:11434
@@ -89,25 +148,25 @@ Si Ollama n'est pas disponible, l'application revient automatiquement aux répon
 
 La réponse est streamée dans l'interface dès que le modèle commence à générer le texte.
 
-## Configuration SharePoint
+## Fallback API SharePoint (optionnel)
 
-Renseignez ces valeurs dans `.env` :
+Souvent bloqué par MFA / Conditional Access. Préférez le workflow dossier ci-dessus.
+
+Si votre environnement autorise encore login/mot de passe API :
 
 ```text
 SHAREPOINT_URL=https://votre-site-sharepoint
-SHAREPOINT_USERNAME=DOMAINE\\utilisateur
-SHAREPOINT_PASSWORD=votre-mot-de-passe
+SHAREPOINT_USERNAME=user@entreprise.com
+SHAREPOINT_PASSWORD=...
 SHAREPOINT_LIBRARY=Documents
 ```
-
-Puis exécutez :
 
 ```bash
 python scripts/ingest_sharepoint.py --check
 python scripts/ingest_sharepoint.py
 ```
 
-Le paramètre `--check` permet de valider les identifiants et de lister les premiers fichiers trouvés. Les échecs sont enregistrés et ignorés pour ne pas bloquer l'ingestion complète.
+Le paramètre `--check` valide la connexion et liste les premiers fichiers. Les échecs sont enregistrés et ignorés pour ne pas bloquer l'ingestion complète.
 
 ## Recherche vectorielle
 
@@ -135,12 +194,18 @@ python scripts/rebuild_index.py
 
 ```text
 config.py                  paramètres via variables d'environnement
+.env.review.example        config hors ligne (sans secrets SharePoint)
+demarrer.sh|.bat           menu guidé (config → sync → check → revue)
+setup_offline.sh|.bat      créer .env.review et le dossier data/
+check_ready.sh|.bat        vérifier base, index, Ollama
+sync_from_folder.sh|.bat   indexer un dossier OneDrive/SharePoint local
+run_review.sh|.bat         lancer l'UI en mode revue hors ligne
 db/                        schéma SQLite, modèles et accès aux données
-ingest/                    ingestion locale/SharePoint et extracteurs
+ingest/                    ingestion locale/SharePoint, manifeste de synchro
 search/                    BM25, recherche vectorielle optionnelle, fusion hybride
 assistant/                 traitement des requêtes, résumé, génération de réponses
 ui/app.py                  application Streamlit
-scripts/                   scripts opérationnels
+scripts/                   setup_offline, check_ready, sync_from_folder, ingest_*
 tests/                     tests Pytest
 ```
 
@@ -155,10 +220,11 @@ Les tests génèrent des documents DOCX/PPTX synthétiques et valident l'ingesti
 ## Limites connues et prochaines étapes
 
 - Les pages PDF purement images sont ignorées ; une OCR hors ligne peut être ajoutée plus tard.
-- Les métadonnées SharePoint varient selon l'environnement ; l'ingestion locale utilise la date de modification du système de fichiers.
+- Le workflow principal est dossier local (OneDrive/téléchargement navigateur) ; l'API SharePoint login/mot de passe est un fallback souvent incompatible avec MFA.
 - Les réponses sont générées par Ollama local, avec streaming dans l'interface.
 - La recherche vectorielle dépend de dépendances optionnelles et d'un modèle local.
 - Le filtrage des droits d'accès n'est pas encore implémenté ; il faut le renforcer avant un déploiement large.
+- Pour une clé USB : chiffrez le volume (BitLocker To Go / VeraCrypt) ; ne laissez pas de mots de passe SharePoint sur la clé.
 
 ## Format de réponse actuel
 

@@ -10,8 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import Settings
 from db.database import Database
-from ingest.sharepoint_client import SharePointClient
 from ingest.pipeline import IngestPipeline
+from ingest.sharepoint_client import SharePointClient
+from ingest.sync_manifest import SyncManifest, default_manifest_path, write_manifest
 
 
 def missing_sharepoint_settings(settings: Settings) -> list[str]:
@@ -60,7 +61,21 @@ def main() -> None:
         if args.reset:
             database.reset()
         summary = IngestPipeline(settings, database).run("sharepoint")
+        stats = database.stats()
+
+    manifest = SyncManifest.create(
+        source_path=settings.sharepoint_url or "sharepoint",
+        mode="sharepoint",
+        processed=summary.processed,
+        skipped=summary.skipped,
+        failed=summary.failed,
+        projects=int(stats["projects"]),
+        chunks=int(stats["chunks"]),
+    )
+    manifest_path = settings.sync_manifest_path or default_manifest_path(settings.db_path)
+    write_manifest(manifest_path, manifest)
     print(f"processed\tskipped\tfailed\n{summary.processed}\t{summary.skipped}\t{summary.failed}")
+    print(f"manifest\t{manifest_path}")
 
 
 if __name__ == "__main__":

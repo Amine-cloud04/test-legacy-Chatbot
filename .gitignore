@@ -1,5 +1,10 @@
 .env
+.env.review
+data/sync_manifest.json
 .venv/
+dist/
+runtime/
+
 __pycache__/
 .pytest_cache/
 *.py[cod]

@@ -14,6 +14,7 @@ from assistant.response_builder import ResponseBuilder
 from config import Settings
 from db.database import Database
 from ingest.pipeline import IngestPipeline
+from ingest.sync_manifest import format_manifest_caption, load_manifest
 from search.hybrid_engine import HybridEngine
 from search.ranker import Ranker
 from search.vector_engine import VECTOR_AVAILABLE
@@ -64,21 +65,30 @@ def main() -> None:
     st.set_page_config(page_title="Assistant de connaissances Safran", layout="wide")
     settings = Settings.from_env()
     st.session_state.setdefault("queries", [])
+    manifest = load_manifest(settings.sync_manifest_path) if settings.sync_manifest_path else None
 
     with st.sidebar:
         st.header("Assistant de connaissances Safran")
-        if st.button("Ingérer les documents locaux"):
+        if settings.review_mode:
+            st.caption("Mode revue hors ligne — pas d'accès SharePoint.")
+        else:
+            st.caption("Synchro recommandée : dossier OneDrive/SharePoint local via `./sync_from_folder.sh`.")
+        if not settings.review_mode and st.button("Ingérer les documents locaux"):
             with st.spinner("Ingestion des documents locaux..."):
                 with Database(settings.db_path) as database:
                     database.init_schema()
                     summary = IngestPipeline(settings, database).run("local")
                 st.success(f"{summary.processed} traités, {summary.skipped} ignorés, {summary.failed} échecs")
+                st.info("Pour une synchro complète avec manifeste, utilisez `./sync_from_folder.sh`.")
         with Database(settings.db_path) as database:
             database.init_schema()
             stats = database.stats()
         st.metric("Projets", stats["projects"])
         st.metric("Fragments", stats["chunks"])
-        st.caption(f"Dernière ingestion : {stats['last_ingestion'] or 'jamais'}")
+        st.caption(format_manifest_caption(manifest))
+        st.caption(f"Dernière ingestion DB : {stats['last_ingestion'] or 'jamais'}")
+        if manifest is not None:
+            st.caption(f"Source : `{manifest.source_path}`")
         local_llm_service_url = getattr(settings, "local_llm_service_url", "")
         local_llm_model = getattr(settings, "local_llm_service_model", "llama3.2:3b")
         if local_llm_service_url:
@@ -94,7 +104,11 @@ def main() -> None:
 
     tab_search, tab_map = st.tabs(["Recherche", "Carte des connaissances"])
     with tab_search:
-        query = st.text_input("Recherche", value=st.session_state.get("active_query", ""), placeholder="Rechercher des projets antérieurs sur le radar, le FPGA ou la navigation UAV")
+        query = st.text_input(
+            "Revue de projets passés",
+            value=st.session_state.get("active_query", ""),
+            placeholder="Quels projets passés ont traité le radar FPGA ou la navigation UAV ?",
+        )
         if st.button("Rechercher", type="primary") and query.strip():
             st.session_state["queries"].append(query.strip())
             with st.spinner("Recherche dans les projets indexés..."):
